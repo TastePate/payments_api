@@ -1,7 +1,9 @@
 from logging.config import fileConfig
+import os
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
+from sqlalchemy.engine import make_url
 
 from alembic import context
 
@@ -10,6 +12,18 @@ from app.models import Base
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+
+# Явный URL теста имеет приоритет над окружением: миграции тестовой базы
+# никогда не должны переключаться на базу запущенного API.
+database_url = config.attributes.get("database_url", os.getenv("DATABASE_URL"))
+if database_url:
+    migration_url = make_url(database_url)
+    if migration_url.drivername == "sqlite+aiosqlite":
+        migration_url = migration_url.set(drivername="sqlite")
+    # Alembic использует синхронный драйвер; %% экранирует проценты для ConfigParser.
+    config.set_main_option(
+        "sqlalchemy.url", migration_url.render_as_string(hide_password=False).replace("%", "%%")
+    )
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
