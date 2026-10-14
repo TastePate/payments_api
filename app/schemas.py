@@ -1,0 +1,60 @@
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, model_validator
+
+
+class TariffRead(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        from_attributes=True
+    )
+
+    id: UUID
+    title: str
+    price: int
+
+
+class PaymentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tariff_id: UUID
+    email: EmailStr
+    method: Literal["card", "installment", "sbp"]
+    installment_months: Literal[3, 6, 12] | None = None
+    promo_code: str | None = None
+
+    @field_validator("promo_code")
+    @classmethod
+    def check_promo_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+
+        if value.upper() != "KVITTO10":
+            raise ValueError("Неизвестный промокод")
+
+        return value
+
+
+    @model_validator(mode="after")
+    def check_installment_correct(self):
+        if self.method == "installment" and self.installment_months is None:
+            raise ValueError('Метод оплаты "рассрочка" не может быть выбран без времени рассрочки')
+
+        return self
+
+
+class PaymentRead(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: UUID
+    tariff_id: UUID
+    status: Literal["pending", "succeeded", "failed", "refunded"]
+    amount: int
+    discount: int
+    method: Literal["installment", "card", "sbp"]
+    installment_months: Literal[3, 6, 12] | None
+    schedule: list[int] | None
+    email: EmailStr
+    created_at: datetime
