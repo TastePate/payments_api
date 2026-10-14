@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
@@ -62,6 +62,15 @@ class PaymentRead(BaseModel):
     schedule: list[int] | None
     email: EmailStr
     created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def normalize_created_at(cls, value: datetime) -> datetime:
+        # SQLite возвращает дату без tzinfo; модель сохраняет её в UTC.
+        # Восстанавливаем зону, чтобы POST, GET и повторы отвечали одинаково.
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 class BankWebhook(BaseModel):

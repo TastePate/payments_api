@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi import Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
@@ -131,7 +131,15 @@ async def post_webhook_bank(
     if new_status not in allowed_transitions.get(current_status, []):
         return JSONResponse({"error": "invalid_transition"}, status_code=409)
 
-    payment.status = new_status
-
+    # Прежний статус проверяется в самом UPDATE: конкурентный вебхук
+    # не сможет повторить переход или перезаписать результат другого запроса.
+    result = await session.execute(
+        update(Payment)
+        .where(Payment.id == webhook_data.payment_id, Payment.status == current_status)
+        .values(status=new_status)
+    )
+    if result.rowcount == 0:
+        await session.rollback()
+        return JSONResponse({"error": "invalid_transition"}, status_code=409)
     await session.commit()
     return JSONResponse({"result": "ok"})
