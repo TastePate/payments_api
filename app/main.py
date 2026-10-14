@@ -7,12 +7,13 @@ from fastapi import Response
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import JSONResponse
 
 from app.config import PROMO_CODES
 from app.db import SessionLocal, get_db
 from app.models import Tariff, Payment
 from app.payment_calculations import create_payment_schedule
-from app.schemas import TariffRead, PaymentCreate, PaymentRead
+from app.schemas import TariffRead, PaymentCreate, PaymentRead, BankWebhook
 from app.seed import seed_tariffs
 
 
@@ -112,5 +113,25 @@ async def get_payment_by_id(
 
 
 @app.post("/webhooks/bank")
-async def post_webhook_bank():
-    pass
+async def post_webhook_bank(
+    session: Annotated[AsyncSession, Depends(get_db)],
+    webhook_data: BankWebhook
+):
+    allowed_transitions = {
+        "pending": ["succeeded", "failed"],
+        "succeeded": ["refunded"]
+    }
+
+    payment = await session.get(Payment, webhook_data.payment_id)
+    if payment is None:
+        raise HTTPException(status_code=404)
+
+    current_status = payment.status
+    new_status = webhook_data.status
+    if new_status not in allowed_transitions.get(current_status, []):
+        return JSONResponse({"error": "invalid_transition"}, status_code=409)
+
+    payment.status = new_status
+
+    await session.commit()
+    return JSONResponse({"result": "ok"})
