@@ -1,13 +1,18 @@
 from contextlib import asynccontextmanager
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import Response
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import PROMO_CODES
 from app.db import SessionLocal, get_db
-from app.models import Tariff
-from app.schemas import TariffRead, PaymentCreate
+from app.models import Tariff, Payment
+from app.payment_calculations import create_payment_schedule
+from app.schemas import TariffRead, PaymentCreate, PaymentRead
 from app.seed import seed_tariffs
 
 
@@ -20,6 +25,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+async def get_payment_by_idempotency_key(
+    session: AsyncSession,
+    idempotency_key: str
+) -> Payment | None:
+    stmt = select(Payment).where(Payment.idempotency_key == idempotency_key)
+    return await session.scalar(stmt)
+
 
 @app.get("/tariffs", response_model=list[TariffRead])
 async def get_tariffs(
@@ -31,24 +43,72 @@ async def get_tariffs(
     return tariffs.all()
 
 
-@app.post("/payments/")
+@app.post("/payments", response_model=PaymentRead, status_code=201)
 async def post_payments(
     session: Annotated[AsyncSession, Depends(get_db)],
-    payment_data: PaymentCreate
+    payment_data: PaymentCreate,
+    response: Response,
+    idempotency_key: Annotated[str | None, Header()] = None,
 ):
+    current_payment: Payment | None
+    if idempotency_key is not None:
+        current_payment = await get_payment_by_idempotency_key(session, idempotency_key)
+        if current_payment is not None:
+            response.status_code = 200
+            return current_payment
+
     tariff = await session.get(Tariff, payment_data.tariff_id)
 
     if not tariff:
         raise HTTPException(status_code=404)
 
+    discount_percent = PROMO_CODES.get(payment_data.promo_code, 0)
+
+    discount = tariff.price * discount_percent // 100
+    total = tariff.price - discount
+    schedule = (create_payment_schedule(total, payment_data.installment_months)
+                if payment_data.method == "installment"
+                else None)
+
+    current_payment = Payment(
+        tariff_id=payment_data.tariff_id,
+        email=payment_data.email,
+        amount=total,
+        discount=discount,
+        method=payment_data.method,
+        installment_months=payment_data.installment_months,
+        schedule=schedule,
+        idempotency_key=idempotency_key
+    )
+
+    session.add(current_payment)
+
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        if idempotency_key is not None:
+            current_payment = await get_payment_by_idempotency_key(session, idempotency_key)
+
+            if current_payment is None:
+                raise
+
+            response.status_code = 200
+            return current_payment
+        raise
+
+    return current_payment
 
 
-
-
-
-@app.get("/payments/{id}")
-async def get_payment_by_id():
-    pass
+@app.get("/payments/{id}", response_model=PaymentRead)
+async def get_payment_by_id(
+    session: Annotated[AsyncSession, Depends(get_db)],
+    id: UUID
+):
+    payment = await session.get(Payment, id)
+    if payment is None:
+        raise HTTPException(status_code=404)
+    return payment
 
 
 @app.post("/webhooks/bank")

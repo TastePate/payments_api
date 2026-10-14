@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, model_validator
 
+from app.config import PROMO_CODES
+
 
 class TariffRead(BaseModel):
     model_config = ConfigDict(
@@ -31,17 +33,19 @@ class PaymentCreate(BaseModel):
         if value is None:
             return value
 
-        if value.upper() != "KVITTO10":
+        if value.upper() not in PROMO_CODES:
             raise ValueError("Неизвестный промокод")
 
-        return value
+        return value.upper()
 
 
     @model_validator(mode="after")
     def check_installment_correct(self):
         if self.method == "installment" and self.installment_months is None:
-            raise ValueError('Метод оплаты "рассрочка" не может быть выбран без времени рассрочки')
+            raise ValueError('Метод оплаты "installment" не может быть выбран без времени рассрочки')
 
+        if self.method != "installment" and self.installment_months:
+            raise ValueError('Нельзя указать дату рассрочки для любых способов оплаты, кроме "installment"')
         return self
 
 
@@ -58,3 +62,10 @@ class PaymentRead(BaseModel):
     schedule: list[int] | None
     email: EmailStr
     created_at: datetime
+
+
+class BankWebhook(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    payment_id: UUID
+    status: Literal["pending", "succeeded", "failed", "refunded"]
