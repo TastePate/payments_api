@@ -1,0 +1,4 @@
+# AnyIO уже используется FastAPI; его pytest-плагин запускает async-тесты.
+pytest==9.0.3
+httpx==0.28.1
+anyio==4.15.1
